@@ -1,10 +1,12 @@
 package mchorse.bbs_trajectory.client.tool;
 
 import mchorse.bbs_mod.film.replays.Replay;
-import mchorse.bbs_mod.film.replays.ReplayKeyframes;
 import mchorse.bbs_mod.forms.entities.IEntity;
 import mchorse.bbs_mod.settings.values.IValueListener;
+import mchorse.bbs_mod.ui.film.controller.UIFilmController;
+import mchorse.bbs_mod.ui.framework.UIContext;
 import mchorse.bbs_mod.ui.framework.elements.input.UIPropTransform;
+import mchorse.bbs_mod.ui.framework.elements.input.drag.TransformSpace;
 import mchorse.bbs_mod.ui.utils.Gizmo;
 import mchorse.bbs_mod.utils.Axis;
 import mchorse.bbs_mod.utils.MathUtils;
@@ -39,6 +41,7 @@ public class UITrajectoryPropTransform extends UIPropTransform
 
     private final Transform scratch = new Transform();
 
+    private UIFilmController controller;
     private Replay replay;
     private IEntity entity;
     private float tick;
@@ -75,6 +78,48 @@ public class UITrajectoryPropTransform extends UIPropTransform
         );
 
         this.setVisible(false);
+    }
+
+    public void setController(UIFilmController controller)
+    {
+        this.controller = controller;
+    }
+
+    @Override
+    public UIContext getContext()
+    {
+        UIContext ctx = super.getContext();
+        if (ctx != null)
+        {
+            return ctx;
+        }
+        if (this.controller != null && this.controller.getContext() != null)
+        {
+            return this.controller.getContext();
+        }
+        if (TrajectoryState.getCurrentPanel() != null && TrajectoryState.getCurrentPanel().getContext() != null)
+        {
+            return TrajectoryState.getCurrentPanel().getContext();
+        }
+        return null;
+    }
+
+    @Override
+    public TransformSpace pickedSpace()
+    {
+        return TransformSpace.GLOBAL;
+    }
+
+    @Override
+    public boolean isRotationConstrained()
+    {
+        return false;
+    }
+
+    @Override
+    public boolean isModel()
+    {
+        return false;
     }
 
     private void notifyKeyframes(int flag)
@@ -133,6 +178,13 @@ public class UITrajectoryPropTransform extends UIPropTransform
         this.scratch.scale.set(1F, 1F, 1F);
 
         this.setTransform(this.scratch);
+    }
+
+    @Override
+    public void beginGesture()
+    {
+        super.beginGesture();
+        this.ensureSnapshot();
     }
 
     private void ensureSnapshot()
@@ -274,8 +326,8 @@ public class UITrajectoryPropTransform extends UIPropTransform
             Keyframe kfX = (Keyframe) kfsX.get(i);
             Keyframe kfZ = (Keyframe) kfsZ.get(i);
 
-            kfX.setValue(kfX.getFactory().yToValue(finalX), true);
-            kfZ.setValue(kfZ.getFactory().yToValue(finalZ), true);
+            kfX.setValue(kfX.getFactory().yToValue(finalX), false);
+            kfZ.setValue(kfZ.getFactory().yToValue(finalZ), false);
         }
 
         // Apply translation to height (y)
@@ -285,7 +337,7 @@ public class UITrajectoryPropTransform extends UIPropTransform
         {
             double finalY = this.snapY.get(i).value + dy;
             Keyframe kfY = (Keyframe) kfsY.get(i);
-            kfY.setValue(kfY.getFactory().yToValue(finalY), true);
+            kfY.setValue(kfY.getFactory().yToValue(finalY), false);
         }
 
         // Apply rotation to yaw channels
@@ -309,12 +361,13 @@ public class UITrajectoryPropTransform extends UIPropTransform
             Keyframe kfVx = (Keyframe) kfsVx.get(i);
             Keyframe kfVz = (Keyframe) kfsVz.get(i);
 
-            kfVx.setValue(kfVx.getFactory().yToValue(rotVx), true);
-            kfVz.setValue(kfVz.getFactory().yToValue(rotVz), true);
+            kfVx.setValue(kfVx.getFactory().yToValue(rotVx), false);
+            kfVz.setValue(kfVz.getFactory().yToValue(rotVz), false);
         }
 
         // Update live entity for fluid real-time feedback
-        if (this.entity != null)
+        IEntity liveEntity = this.entity != null ? this.entity : (this.controller != null ? this.controller.getCurrentEntity() : null);
+        if (liveEntity != null)
         {
             double ex = this.replay.keyframes.x.interpolate(this.tick);
             double ey = this.replay.keyframes.y.interpolate(this.tick);
@@ -323,54 +376,36 @@ public class UITrajectoryPropTransform extends UIPropTransform
             float ebodyYaw = this.replay.keyframes.bodyYaw.interpolate(this.tick).floatValue();
             float eheadYaw = this.replay.keyframes.headYaw.interpolate(this.tick).floatValue();
 
-            this.entity.setPosition(ex, ey, ez);
-            this.entity.setPrevX(ex);
-            this.entity.setPrevY(ey);
-            this.entity.setPrevZ(ez);
+            liveEntity.setPosition(ex, ey, ez);
+            liveEntity.setPrevX(ex);
+            liveEntity.setPrevY(ey);
+            liveEntity.setPrevZ(ez);
 
-            this.entity.setYaw(eyaw);
-            this.entity.setPrevYaw(eyaw);
-            this.entity.setBodyYaw(ebodyYaw);
-            this.entity.setPrevBodyYaw(ebodyYaw);
-            this.entity.setHeadYaw(eheadYaw);
-            this.entity.setPrevHeadYaw(eheadYaw);
+            liveEntity.setYaw(eyaw);
+            liveEntity.setPrevYaw(eyaw);
+            liveEntity.setBodyYaw(ebodyYaw);
+            liveEntity.setPrevBodyYaw(ebodyYaw);
+            liveEntity.setHeadYaw(eheadYaw);
+            liveEntity.setPrevHeadYaw(eheadYaw);
         }
     }
 
     @SuppressWarnings("rawtypes")
     private void applyAngleDelta(KeyframeChannel channel, List<ChannelSnapshot> snaps, double deltaYawDeg)
     {
-        if (channel == null) return;
+        if (channel == null || snaps == null) return;
         List kfs = channel.getKeyframes();
         int count = Math.min(snaps.size(), kfs.size());
         for (int i = 0; i < count; i++)
         {
             double finalAngle = snaps.get(i).value + deltaYawDeg;
             Keyframe kf = (Keyframe) kfs.get(i);
-            kf.setValue(kf.getFactory().yToValue(finalAngle), true);
+            kf.setValue(kf.getFactory().yToValue(finalAngle), false);
         }
     }
 
     private void onGestureEnd()
     {
-        if (!this.snapshotTaken)
-        {
-            return;
-        }
-
-        double curTx = this.scratch.translate.x;
-        double curTy = this.scratch.translate.y;
-        double curTz = this.scratch.translate.z;
-        double curRotYRad = this.scratch.rotate.y;
-        double curYawDeg = -Math.toDegrees(curRotYRad);
-
-        this.pivotX = curTx;
-        this.pivotY = curTy;
-        this.pivotZ = curTz;
-        this.pivotYaw = curYawDeg;
-
-        TrajectoryState.updatePivot(curTx, curTy, curTz, curYawDeg);
-
         this.snapshotTaken = false;
     }
 }

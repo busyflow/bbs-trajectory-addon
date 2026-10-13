@@ -23,13 +23,14 @@ public class TrajectoryState
     private static UIFilmPanel currentPanel = null;
     private static PivotMode pivotMode = PivotMode.START_FRAME;
 
-    private static boolean hasCustomPivot = false;
-    private static final Vector3d customPivot = new Vector3d();
-    private static double customPivotYaw = 0.0;
-
     public static void setPanel(UIFilmPanel panel)
     {
         currentPanel = panel;
+    }
+
+    public static UIFilmPanel getCurrentPanel()
+    {
+        return currentPanel;
     }
 
     public static boolean isActive()
@@ -55,29 +56,16 @@ public class TrajectoryState
         }
 
         active = !active;
-
-        if (active)
-        {
-            resetPivot(panel);
-        }
     }
 
     public static void setPivotMode(PivotMode mode)
     {
         pivotMode = mode;
-        hasCustomPivot = false;
     }
 
     public static void resetPivot(UIFilmPanel panel)
     {
-        hasCustomPivot = false;
-    }
-
-    public static void updatePivot(double x, double y, double z, double yaw)
-    {
-        hasCustomPivot = true;
-        customPivot.set(x, y, z);
-        customPivotYaw = yaw;
+        pivotMode = PivotMode.START_FRAME;
     }
 
     public static Replay getSelectedReplay(UIFilmPanel panel)
@@ -103,11 +91,6 @@ public class TrajectoryState
 
     public static Vector3d getPivot(Replay replay, float tick)
     {
-        if (hasCustomPivot)
-        {
-            return new Vector3d(customPivot);
-        }
-
         if (replay == null)
         {
             return new Vector3d(0, 0, 0);
@@ -124,11 +107,6 @@ public class TrajectoryState
 
     public static double getPivotYaw(Replay replay, float tick)
     {
-        if (hasCustomPivot)
-        {
-            return customPivotYaw;
-        }
-
         if (replay == null)
         {
             return 0.0;
@@ -151,7 +129,14 @@ public class TrajectoryState
             return false;
         }
 
-        Vector3d pivot = getPivot(selectedReplay, context.transition);
+        float sampleTick = 0F;
+        if (pivotMode == PivotMode.CURRENT_CURSOR && currentPanel != null)
+        {
+            float transition = currentPanel.getRunner().getTransition(context.transition);
+            sampleTick = currentPanel.getKeyframeCursor(transition);
+        }
+
+        Vector3d pivot = getPivot(selectedReplay, sampleTick);
         double cx = context.camera.getPos().x;
         double cy = context.camera.getPos().y;
         double cz = context.camera.getPos().z;
