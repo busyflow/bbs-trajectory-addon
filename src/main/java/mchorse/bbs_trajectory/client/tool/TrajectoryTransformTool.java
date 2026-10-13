@@ -70,6 +70,7 @@ public class TrajectoryTransformTool extends FilmEditorTool
         drag.setRotateAxes(drag.gizmoWorldAxes);
 
         Vector3d pivot = this.propTransform.getPivot();
+        drag.gizmoOrigin.set(pivot.x, pivot.y, pivot.z);
         Matrix4f placement = new Matrix4f().translate(
             (float) (pivot.x - panel.getCamera().position.x),
             (float) (pivot.y - panel.getCamera().position.y),

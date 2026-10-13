@@ -282,6 +282,43 @@ public class UITrajectoryPropTransform extends UIPropTransform
         this.postCallback();
     }
 
+    private static double sampleSnapshot(List<ChannelSnapshot> snaps, float tick, double fallback)
+    {
+        if (snaps == null || snaps.isEmpty())
+        {
+            return fallback;
+        }
+
+        if (snaps.size() == 1 || tick <= snaps.get(0).tick)
+        {
+            return snaps.get(0).value;
+        }
+
+        int last = snaps.size() - 1;
+        if (tick >= snaps.get(last).tick)
+        {
+            return snaps.get(last).value;
+        }
+
+        for (int i = 0; i < last; i++)
+        {
+            ChannelSnapshot a = snaps.get(i);
+            ChannelSnapshot b = snaps.get(i + 1);
+
+            if (tick >= a.tick && tick <= b.tick)
+            {
+                if (Math.abs(b.tick - a.tick) < 1E-5F)
+                {
+                    return a.value;
+                }
+                double factor = (tick - a.tick) / (double) (b.tick - a.tick);
+                return a.value + (b.value - a.value) * factor;
+            }
+        }
+
+        return snaps.get(last).value;
+    }
+
     @SuppressWarnings("rawtypes")
     private void applyTransform()
     {
@@ -306,38 +343,81 @@ public class UITrajectoryPropTransform extends UIPropTransform
         double cosA = Math.cos(alphaRad);
         double sinA = Math.sin(alphaRad);
 
-        // Apply rotation and translation to positions (x, z)
-        List kfsX = this.replay.keyframes.x.getKeyframes();
-        List kfsZ = this.replay.keyframes.z.getKeyframes();
-        int countXZ = Math.min(this.snapX.size(), this.snapZ.size());
-        countXZ = Math.min(countXZ, Math.min(kfsX.size(), kfsZ.size()));
+        boolean hasRotation = Math.abs(deltaYawDeg) >= 1E-4;
 
-        for (int i = 0; i < countXZ; i++)
+        // Apply X channel transformation
+        if (this.replay.keyframes.x.isEmpty())
         {
-            double ox = this.snapX.get(i).value - this.pivotX;
-            double oz = this.snapZ.get(i).value - this.pivotZ;
+            this.replay.keyframes.x.insert(0F, this.pivotX + dx);
+        }
+        else
+        {
+            List kfsX = this.replay.keyframes.x.getKeyframes();
+            int countX = Math.min(this.snapX.size(), kfsX.size());
+            for (int i = 0; i < countX; i++)
+            {
+                ChannelSnapshot snap = this.snapX.get(i);
+                double finalX;
+                if (hasRotation)
+                {
+                    double ox = snap.value - this.pivotX;
+                    double oz = sampleSnapshot(this.snapZ, snap.tick, this.pivotZ) - this.pivotZ;
+                    double rotX = ox * cosA - oz * sinA;
+                    finalX = this.pivotX + dx + rotX;
+                }
+                else
+                {
+                    finalX = snap.value + dx;
+                }
+                Keyframe kfX = (Keyframe) kfsX.get(i);
+                kfX.setValue(kfX.getFactory().yToValue(finalX), true);
+            }
+        }
 
-            double rotX = ox * cosA - oz * sinA;
-            double rotZ = ox * sinA + oz * cosA;
-
-            double finalX = this.pivotX + dx + rotX;
-            double finalZ = this.pivotZ + dz + rotZ;
-
-            Keyframe kfX = (Keyframe) kfsX.get(i);
-            Keyframe kfZ = (Keyframe) kfsZ.get(i);
-
-            kfX.setValue(kfX.getFactory().yToValue(finalX), false);
-            kfZ.setValue(kfZ.getFactory().yToValue(finalZ), false);
+        // Apply Z channel transformation
+        if (this.replay.keyframes.z.isEmpty())
+        {
+            this.replay.keyframes.z.insert(0F, this.pivotZ + dz);
+        }
+        else
+        {
+            List kfsZ = this.replay.keyframes.z.getKeyframes();
+            int countZ = Math.min(this.snapZ.size(), kfsZ.size());
+            for (int i = 0; i < countZ; i++)
+            {
+                ChannelSnapshot snap = this.snapZ.get(i);
+                double finalZ;
+                if (hasRotation)
+                {
+                    double ox = sampleSnapshot(this.snapX, snap.tick, this.pivotX) - this.pivotX;
+                    double oz = snap.value - this.pivotZ;
+                    double rotZ = ox * sinA + oz * cosA;
+                    finalZ = this.pivotZ + dz + rotZ;
+                }
+                else
+                {
+                    finalZ = snap.value + dz;
+                }
+                Keyframe kfZ = (Keyframe) kfsZ.get(i);
+                kfZ.setValue(kfZ.getFactory().yToValue(finalZ), true);
+            }
         }
 
         // Apply translation to height (y)
-        List kfsY = this.replay.keyframes.y.getKeyframes();
-        int countY = Math.min(this.snapY.size(), kfsY.size());
-        for (int i = 0; i < countY; i++)
+        if (this.replay.keyframes.y.isEmpty())
         {
-            double finalY = this.snapY.get(i).value + dy;
-            Keyframe kfY = (Keyframe) kfsY.get(i);
-            kfY.setValue(kfY.getFactory().yToValue(finalY), false);
+            this.replay.keyframes.y.insert(0F, this.pivotY + dy);
+        }
+        else
+        {
+            List kfsY = this.replay.keyframes.y.getKeyframes();
+            int countY = Math.min(this.snapY.size(), kfsY.size());
+            for (int i = 0; i < countY; i++)
+            {
+                double finalY = this.snapY.get(i).value + dy;
+                Keyframe kfY = (Keyframe) kfsY.get(i);
+                kfY.setValue(kfY.getFactory().yToValue(finalY), true);
+            }
         }
 
         // Apply rotation to yaw channels
@@ -346,24 +426,45 @@ public class UITrajectoryPropTransform extends UIPropTransform
         this.applyAngleDelta(this.replay.keyframes.headYaw, this.snapHeadYaw, deltaYawDeg);
 
         // Apply rotation to velocities
-        List kfsVx = this.replay.keyframes.vX.getKeyframes();
-        List kfsVz = this.replay.keyframes.vZ.getKeyframes();
-        int countV = Math.min(this.snapVx.size(), this.snapVz.size());
-        countV = Math.min(countV, Math.min(kfsVx.size(), kfsVz.size()));
-        for (int i = 0; i < countV; i++)
+        if (hasRotation)
         {
-            double vx = this.snapVx.get(i).value;
-            double vz = this.snapVz.get(i).value;
+            List kfsVx = this.replay.keyframes.vX.getKeyframes();
+            int countVx = Math.min(this.snapVx.size(), kfsVx.size());
+            for (int i = 0; i < countVx; i++)
+            {
+                ChannelSnapshot snap = this.snapVx.get(i);
+                double vx = snap.value;
+                double vz = sampleSnapshot(this.snapVz, snap.tick, 0D);
 
-            double rotVx = vx * cosA - vz * sinA;
-            double rotVz = vx * sinA + vz * cosA;
+                double rotVx = vx * cosA - vz * sinA;
+                Keyframe kfVx = (Keyframe) kfsVx.get(i);
+                kfVx.setValue(kfVx.getFactory().yToValue(rotVx), true);
+            }
 
-            Keyframe kfVx = (Keyframe) kfsVx.get(i);
-            Keyframe kfVz = (Keyframe) kfsVz.get(i);
+            List kfsVz = this.replay.keyframes.vZ.getKeyframes();
+            int countVz = Math.min(this.snapVz.size(), kfsVz.size());
+            for (int i = 0; i < countVz; i++)
+            {
+                ChannelSnapshot snap = this.snapVz.get(i);
+                double vx = sampleSnapshot(this.snapVx, snap.tick, 0D);
+                double vz = snap.value;
 
-            kfVx.setValue(kfVx.getFactory().yToValue(rotVx), false);
-            kfVz.setValue(kfVz.getFactory().yToValue(rotVz), false);
+                double rotVz = vx * sinA + vz * cosA;
+                Keyframe kfVz = (Keyframe) kfsVz.get(i);
+                kfVz.setValue(kfVz.getFactory().yToValue(rotVz), true);
+            }
         }
+
+        // Post channel notifications to refresh caches and timeline
+        this.replay.keyframes.x.postNotify();
+        this.replay.keyframes.y.postNotify();
+        this.replay.keyframes.z.postNotify();
+        this.replay.keyframes.yaw.postNotify();
+        this.replay.keyframes.bodyYaw.postNotify();
+        this.replay.keyframes.headYaw.postNotify();
+        this.replay.keyframes.vX.postNotify();
+        this.replay.keyframes.vZ.postNotify();
+        this.replay.keyframes.postNotify();
 
         // Update live entity for fluid real-time feedback
         IEntity liveEntity = this.entity != null ? this.entity : (this.controller != null ? this.controller.getCurrentEntity() : null);
@@ -400,7 +501,7 @@ public class UITrajectoryPropTransform extends UIPropTransform
         {
             double finalAngle = snaps.get(i).value + deltaYawDeg;
             Keyframe kf = (Keyframe) kfs.get(i);
-            kf.setValue(kf.getFactory().yToValue(finalAngle), false);
+            kf.setValue(kf.getFactory().yToValue(finalAngle), true);
         }
     }
 
