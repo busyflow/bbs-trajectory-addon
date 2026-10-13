@@ -1,0 +1,177 @@
+import java.security.MessageDigest
+
+configurations {
+	sqlite
+}
+dependencies {
+	sqlite 'org.xerial:sqlite-jdbc:3.45.1.0'
+}
+
+tasks.register('syncModrinthDb') {
+	doLast {
+		def urls = configurations.sqlite.files.collect { it.toURI().toURL() } as URL[]
+		def loader = new URLClassLoader(urls, getClass().classLoader)
+		def driverClass = loader.loadClass("org.sqlite.JDBC")
+		java.sql.Driver driver = (java.sql.Driver) driverClass.getDeclaredConstructor().newInstance()
+		def conn = driver.connect("jdbc:sqlite:C:/Users/jacqu/AppData/Roaming/ModrinthApp/app.db", new Properties())
+		conn.setAutoCommit(false)
+		
+		def stmt = conn.createStatement()
+		
+		def calcHash = { File f, String algo ->
+			def md = MessageDigest.getInstance(algo)
+			f.eachByte(4096) { b, len -> md.update(b, 0, len) }
+			return md.digest().encodeHex().toString()
+		}
+		
+		def modNames = [
+			'bbs_crowd-1.0.0-1.20.1.jar',
+			'bbs-2.7-1.20.1.jar',
+			'bbs_pov-1.0.0-1.20.1.jar',
+			'bbs_physics-1.1-1.20.1.jar',
+			'refreshedui-1.3.2-fs2.7-1.20.1.jar',
+			'irlite-1.1.8+mc1.20.1.jar'
+		]
+		
+		def mods = []
+		for (name in modNames) {
+			def path = "C:/Users/jacqu/AppData/Roaming/ModrinthApp/profiles/Iron Golem civ/mods/${name}"
+			def rel = "mods/${name}"
+			def checkStmt = conn.prepareStatement("SELECT id FROM instance_files WHERE instance_id = 'local:30283559-caa0-4a8a-8453-c9c2ac2bf3e4' AND (file_name = ? OR relative_path = ?)")
+			checkStmt.setString(1, name)
+			checkStmt.setString(2, rel)
+			def rs = checkStmt.executeQuery()
+			def existingId = rs.next() ? rs.getString("id") : "instance-file:${name.replace('.', '-')}-irongolemciv"
+			rs.close()
+			checkStmt.close()
+			
+			mods << [
+				id: existingId,
+				path: path,
+				rel: rel,
+				name: name
+			]
+		}
+		
+		for (m in mods) {
+			File f = new File(m.path)
+			if (!f.exists()) {
+				throw new GradleException("Mod file does not exist: " + m.path)
+			}
+			m.size = f.length()
+			m.sha1 = calcHash(f, "SHA-1")
+			m.sha512 = calcHash(f, "SHA-512")
+			println("Computed " + m.name + ": size=" + m.size + ", sha1=" + m.sha1)
+		}
+		
+		long nowSec = System.currentTimeMillis() / 1000L
+		long nowNs = System.currentTimeMillis() * 1000000L
+		
+		// 1. Update/insert instance_files
+		def psFile = conn.prepareStatement("INSERT OR REPLACE INTO instance_files (id, instance_id, relative_path, file_name, enabled, sha1, size, missing, added_at, modified_at) VALUES (?, 'local:30283559-caa0-4a8a-8453-c9c2ac2bf3e4', ?, ?, 1, ?, ?, 0, ?, ?)")
+		for (m in mods) {
+			psFile.setString(1, m.id)
+			psFile.setString(2, m.rel)
+			psFile.setString(3, m.name)
+			psFile.setString(4, m.sha1)
+			psFile.setLong(5, m.size)
+			psFile.setLong(6, nowSec)
+			psFile.setLong(7, nowSec)
+			psFile.executeUpdate()
+			println("Updated instance_files for " + m.name + " (missing=0, size=" + m.size + ")")
+		}
+		psFile.close()
+		
+		// 2. Update store_instance_files
+		def psStoreFile = conn.prepareStatement("INSERT OR REPLACE INTO store_instance_files (file_id, blob_sha512, materialization_kind) VALUES (?, ?, 'copy')")
+		for (m in mods) {
+			psStoreFile.setString(1, m.id)
+			psStoreFile.setString(2, m.sha512)
+			psStoreFile.executeUpdate()
+			println("Updated store_instance_files for " + m.name)
+		}
+		psStoreFile.close()
+		
+		// 3. Update store_blobs
+		def psBlob = conn.prepareStatement("INSERT OR REPLACE INTO store_blobs (sha512, size, status, modified_as, created_at, last_used_at, verified_at, sources) VALUES (?, ?, 'ready', ?, ?, ?, ?, '[]')")
+		for (m in mods) {
+			psBlob.setString(1, m.sha512)
+			psBlob.setLong(2, m.size)
+			psBlob.setLong(3, nowNs)
+			psBlob.setLong(4, nowSec)
+			psBlob.setLong(5, nowSec)
+			psBlob.setLong(6, nowSec)
+			psBlob.executeUpdate()
+			println("Updated store_blobs for " + m.name)
+		}
+		psBlob.close()
+		
+		// 4. Update both store/content/objects and blob_store on disk
+		def storeDir = new File("C:/Users/jacqu/AppData/Roaming/ModrinthApp/store/content/objects")
+		def blobDir = new File("C:/Users/jacqu/AppData/Roaming/ModrinthApp/blob_store")
+		for (m in mods) {
+			def prefix = m.sha512.substring(0, 2)
+			
+			def sDir = new File(storeDir, prefix)
+			sDir.mkdirs()
+			def sBlob = new File(sDir, m.sha512)
+			if (!sBlob.exists() || sBlob.length() != m.size) {
+				java.nio.file.Files.copy(new File(m.path).toPath(), sBlob.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+				println("Created store blob object: " + sBlob.absolutePath)
+			}
+			
+			def bDir = new File(blobDir, prefix)
+			bDir.mkdirs()
+			def bBlob = new File(bDir, m.sha512)
+			if (!bBlob.exists() || bBlob.length() != m.size) {
+				java.nio.file.Files.copy(new File(m.path).toPath(), bBlob.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+				println("Created blob_store object: " + bBlob.absolutePath)
+			}
+		}
+		
+		// 5. Update profile modified time
+		stmt.executeUpdate("UPDATE instances SET modified = " + nowSec + " WHERE id = 'local:30283559-caa0-4a8a-8453-c9c2ac2bf3e4'")
+		
+		// 6. Verify table contents
+		def checkRs = stmt.executeQuery("SELECT file_name, enabled, missing, size FROM instance_files WHERE instance_id = 'local:30283559-caa0-4a8a-8453-c9c2ac2bf3e4' AND file_name LIKE '%bbs%'")
+		println("\n--- Current BBS files in instance_files ---")
+		while (checkRs.next()) {
+			println("  " + checkRs.getString("file_name") + " -> enabled=" + checkRs.getInt("enabled") + ", missing=" + checkRs.getInt("missing") + ", size=" + checkRs.getLong("size"))
+		}
+		checkRs.close()
+		
+		conn.commit()
+		conn.close()
+		println("Successfully synchronized Modrinth SQLite DB for all BBS mods!")
+	}
+}
+
+tasks.register('inspectDb') {
+	doLast {
+		def urls = configurations.sqlite.files.collect { it.toURI().toURL() } as URL[]
+		def loader = new URLClassLoader(urls, getClass().classLoader)
+		def driverClass = loader.loadClass("org.sqlite.JDBC")
+		java.sql.Driver driver = (java.sql.Driver) driverClass.getDeclaredConstructor().newInstance()
+		def conn = driver.connect("jdbc:sqlite:C:/Users/jacqu/AppData/Roaming/ModrinthApp/app.db", new Properties())
+		def stmt = conn.createStatement()
+		
+		def metaRs = stmt.executeQuery("PRAGMA table_info(instance_files)")
+		println("=== instance_files columns ===")
+		while (metaRs.next()) {
+			println("  " + metaRs.getString("name") + " (" + metaRs.getString("type") + ")")
+		}
+		metaRs.close()
+		
+		def rowsRs = stmt.executeQuery("SELECT * FROM instance_files WHERE instance_id = 'local:30283559-caa0-4a8a-8453-c9c2ac2bf3e4' AND (file_name LIKE '%bbs%' OR file_name LIKE '%crowd%')")
+		def cols = rowsRs.getMetaData().getColumnCount()
+		println("\n=== instance_files rows ===")
+		while (rowsRs.next()) {
+			println("ROW:")
+			for (int i = 1; i <= cols; i++) {
+				println("  " + rowsRs.getMetaData().getColumnName(i) + ": " + rowsRs.getObject(i))
+			}
+		}
+		rowsRs.close()
+		conn.close()
+	}
+}
